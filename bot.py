@@ -8,6 +8,8 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
+from dotenv import load_dotenv
+load_dotenv()  # loads .env before os.environ reads
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -20,50 +22,30 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 
 WELCOME_MESSAGE = """
-👋 *Welcome to the Quit Drinking Support Group!*
-
-Here you'll find people who understand what you're going through. You're not alone.
-
-*Quick resources:*
-🆘 Crisis line: 1-800-662-4357 (SAMHSA)
-📖 /r/stopdrinking on Reddit
-📱 AA Meeting finder: aa.org
-💬 SMART Recovery: smartrecovery.org
-
-*Group rules:*
-✅ Be kind and supportive
-✅ Share your experience
-❌ No promotion or selling
-❌ No shaming
-
-*How long have you been sober?* Share below! Every day counts. 💪
+Зарегистрироваться на мастер-класс можно здесь:
+https://bothelp.cc/mini?domain=allencarrlife&id=3
 """.strip()
 
-SPAM_CHECK_PROMPT = """You are a moderation assistant for a quit-drinking support group on Telegram.
+SPAM_CHECK_PROMPT = """
+You are a Telegram group moderator for a Russian speaking chat.
 
-Your job: decide if a message is SPAM/PROMOTIONAL or LEGITIMATE.
+Your job is ONLY to detect obvious spam or abusive content.
 
-SPAM/PROMOTIONAL means:
-- Selling products, services, supplements, apps
-- Advertising rehab centers or paid programs (unless just mentioning them casually)
-- Crypto, forex, gambling, MLM
-- "DM me", "check my bio/link", "join my channel"
-- Generic motivational content with a link or call to action
-- Anything that feels like an ad
+Rules:
+- If the message is a normal greeting (like "Привет", "Здравствуйте", "Как дела") → LEGITIMATE
+- If the message is short but normal human input → LEGITIMATE
+- If the message is random keyboard spam (like "asdkj123", "аааааааа", "qweqweqwe") → SPAM
+- If the message contains advertising, selling, links, or promotion → SPAM
+- If the message contains insults or harassment → SPAM
 
-LEGITIMATE means:
-- Personal stories about quitting drinking
-- Asking for help or advice
-- Sharing struggles or victories
-- Recommending free resources without a sales angle
-- General chat and support
+IMPORTANT:
+- Do NOT guess hidden intent.
+- Do NOT assume spam without clear signals.
+- Be conservative: if unsure → LEGITIMATE.
 
-Message to classify:
-\"\"\"
-{message}
-\"\"\"
-
-Reply with ONLY one word: SPAM or LEGITIMATE"""
+Return ONLY JSON:
+{"label": "SPAM"} or {"label": "LEGITIMATE"}
+"""
 
 
 async def is_spam(text: str) -> bool:
@@ -81,7 +63,7 @@ async def is_spam(text: str) -> bool:
                 },
             )
             response.raise_for_status()
-            result = response.json().get("response", "").strip().upper()
+            result = response.json().get("label", "").strip().upper()
             logger.info(f"Ollama verdict for message: {result!r}")
             return result.startswith("SPAM")
     except Exception as e:
@@ -101,15 +83,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(WELCOME_MESSAGE, parse_mode="Markdown")
         return
 
-    # --- Skip short messages (unlikely to be spam) ---
-    if len(text) < 20:
+    if update.message.chat.type != "group":
+        return
+
+    if message.from_user.is_bot:
         return
 
     # --- Spam check via Ollama ---
-    if await is_spam(text):
+    result = await is_spam(text)
+    if result:
         try:
             await message.delete()
-            logger.info(f"Deleted spam from @{message.from_user.username}: {text[:80]}")
+            logger.info(f"Deleted spam from @{message.from_user.username}: {text[:80]} "
+                        f"with a reson {result}\n{message.text}")
             # Optional: notify the user privately (comment out if you don't want this)
             # await context.bot.send_message(
             #     chat_id=message.from_user.id,
