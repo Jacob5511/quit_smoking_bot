@@ -1,8 +1,7 @@
 import os
 import logging
-import httpx
 import uuid
-from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, Message, InlineKeyboardButton, InlineKeyboardMarkup, ChatPermissions
 from telegram.ext import (
     ApplicationBuilder,
     MessageHandler,
@@ -21,11 +20,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
-OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.2")
 ADMIN_ID = int(os.environ["ADMIN_ID"])
 
-banned_cache = {}  # msg_id -> {chat_id, user_id, username, text}
+muted_cache = {}  # msg_id -> {chat_id, user_id, username, text}
 
 WELCOME_MESSAGE = """
 Зарегистрироваться на мастер-класс можно здесь:
@@ -33,109 +30,29 @@ https://bothelp.cc/mini?domain=allencarrlife&id=3
 """.strip()
 
 SPAM_KEYWORDS = [
-    "аработок", "заработок", "заработка", "доп. доход", "доход",
-    "$", "usd", "баксы", "баксов",
-    "удаленная занятость", "удалёнка", "удаленную", "удалённой",
-    "способ заработка", "бизнес-предложение", "бизнес предложение",
-    "вакансии", "от 18 лет", "2-3 часа", "3 человека",
-    "строго", "оплат", "предлагаю",
-    "remote", "work from home"
+    "заработок", "от 1000 рублей", "доп. доход", "$",
+    "предлагаю удаленную занятость", "занятость", "удаленную",
+    "способ заработка", "usd", "2-3 часа", "бизнес-предложение",
+    "бизнес предложение", "3 человека", "удалёнка", "баксы", "баксов",
+    "спо чно", "3apa66oтok", "yдaaлeннaя cфeepa", "строгoo 2o+",
+    "нukkakuх oплaaт.", "uнтеeρеснο", "заработка", "удалённой",
+    "вакансии", "от 18 лет",
 ]
 
-SPAM_CHECK_PROMPT = """
-You are a Telegram moderation filter in a russian-speaking group chat.
 
-Your only job is to detect EXTERNAL ADVERTISING or SELLING.
-
-You are NOT a general spam detector.
---------------------------------
-
-Message:
-\"\"\"{message}\"\"\"
-
---------------------------------
-BLOCK (SPAM) ONLY IF:
-
-1. Selling or promoting anything:
-- "buy this", "for sale", "selling"
-- offers of services or products
-
-2. Asking users to contact privately:
-- "DM me", "message me", "write me privately"
-
-3. Advertising or scams:
-- links to channels, groups, bots, websites
-- crypto, investments, jobs, income schemes
-
-4. If the message contains any of these:
-    "аработок", "заработок", "заработка", "доп. доход", "доход",
-    "$", "usd", "баксы", "баксов",
-    "удаленная занятость", "удалёнка", "удаленную", "удалённой",
-    "способ заработка", "бизнес-предложение", "бизнес предложение",
-    "вакансии", "от 18 лет", "2-3 часа", "3 человека",
-    "строго", "оплат", "предлагаю",
-    "remote", "work from home"
-
---------------------------------
-ALLOW (LEGITIMATE):
-
-Everything else, including:
-- greetings ("hello", "hi", "привет")
-- random messages
-- questions
-- insults (do NOT block for insults)
-- questions about the course
-- price questions
-- "what is this course?"
-- "how much does it cost?"
-- any curiosity about the product
-
-IMPORTANT RULE:
-
-- If the message is NOT clearly advertising or selling → LEGITIMATE
-- If you are unsure → LEGITIMATE
-- Never block questions about the course or pricing
-
---------------------------------
-OUTPUT FORMAT:
-
-Return a word:
-SPAM or LEGITIMATE
-"""
-
-
-def rule_based_spam(text: str) -> bool:
+def is_spam(text: str) -> bool:
     t = text.lower()
-    return any(k in t for k in SPAM_KEYWORDS)
-
-
-async def is_spam(text: str) -> bool:
-    prompt = SPAM_CHECK_PROMPT.format(message=text[:1000])
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(
-            f"{OLLAMA_URL}/api/generate",
-            json={
-                "model": OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {"temperature": 0.0},
-            },
-        )
-        response.raise_for_status()
-        raw = response.json().get("response", "").strip().upper()
-        logger.info(f"Ollama raw output: {raw!r}")
-        return "SPAM" in raw
+    return any(k.lower() in t for k in SPAM_KEYWORDS)
 
 
 async def mute_and_notify(context: ContextTypes.DEFAULT_TYPE, message: Message):
-    from telegram import ChatPermissions
     username = f"@{message.from_user.username}" if message.from_user.username else message.from_user.full_name
     user_id = message.from_user.id
     chat_id = message.chat_id
     deleted_text = message.text
 
     msg_id = str(uuid.uuid4())[:8]
-    banned_cache[msg_id] = {
+    muted_cache[msg_id] = {
         "chat_id": chat_id,
         "user_id": user_id,
         "username": username,
@@ -143,8 +60,6 @@ async def mute_and_notify(context: ContextTypes.DEFAULT_TYPE, message: Message):
     }
 
     await message.delete()
-
-    # Mute: remove all send permissions
     await context.bot.restrict_chat_member(
         chat_id=chat_id,
         user_id=user_id,
@@ -155,7 +70,7 @@ async def mute_and_notify(context: ContextTypes.DEFAULT_TYPE, message: Message):
             can_add_web_page_previews=False,
         ),
     )
-    logger.info(f"Muted {username} ({user_id}) for spam: {deleted_text[:80]}")
+    logger.info(f"Muted {username} ({user_id}): {deleted_text[:80]}")
 
     keyboard = InlineKeyboardMarkup([
         [
@@ -175,13 +90,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message or not message.text:
         return
 
-    user_id = message.from_user.id
-    chat_id = message.chat_id
+    # Only moderate group chats
+    if message.chat.type not in ("group", "supergroup"):
+        return
 
-    # IGNORE ADMINS
-    member = await context.bot.get_chat_member(chat_id, user_id)
-    if member.status in ["administrator", "creator"]:
-        print(member.status)
+    # Skip bots
+    if message.from_user.is_bot:
+        return
+
+    # Ignore admins and the group creator
+    member = await context.bot.get_chat_member(message.chat_id, message.from_user.id)
+    if member.status in ("administrator", "creator"):
         return
 
     text = message.text.strip()
@@ -191,32 +110,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text(WELCOME_MESSAGE)
         return
 
-    # Skip bots
-    if message.from_user.is_bot:
-        return
-
-    # Only moderate group chats
-    if message.chat.type not in ("group", "supergroup"):
-        return
-
-    # Layer 1: fast keyword check
-    if rule_based_spam(text):
+    # Keyword spam check
+    if is_spam(text):
         await mute_and_notify(context, message)
-        return
-
-    # # Layer 2: Ollama check
-    # if await is_spam(text):
-    #     await mute_and_notify(context, message)
-    #     return
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    from telegram import ChatPermissions
     query = update.callback_query
     await query.answer()
 
     action, msg_id = query.data.split("|")
-    stored = banned_cache.pop(msg_id, None)
+    stored = muted_cache.pop(msg_id, None)
 
     if not stored:
         await query.edit_message_text(query.message.text + "\n\n⚠️ Already handled.")
@@ -240,6 +144,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 query.message.text + f"\n\n🔊 {stored['username']} was unmuted."
             )
+            logger.info(f"Unmuted {stored['username']} ({stored['user_id']})")
         except Exception as e:
             await query.edit_message_text(query.message.text + f"\n\n❌ Unmute failed: {e}")
 
