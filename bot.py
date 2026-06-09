@@ -31,8 +31,8 @@ deepseek = AsyncOpenAI(
 muted_cache = {}  # msg_id -> {chat_id, user_id, username, text}
 
 WELCOME_MESSAGE = """
-Зарегистрироваться на мастер-класс можно здесь:
-https://bothelp.cc/mini?domain=allencarrlife&id=3
+Зарегистрироваться на БЕСПЛАТНЫЙ мастер-класс можно здесь:
+https://bothelp.cc/mini?domain=aleksfomin&id=2
 """.strip()
 
 SPAM_KEYWORDS = [
