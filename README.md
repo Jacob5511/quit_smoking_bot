@@ -1,7 +1,7 @@
 # 🍺❌ Quit Drinking Support Bot
 
 A Telegram group moderation bot that:
-- **Deletes spam/promotional messages** using Ollama (local LLM, no API costs)
+- **Deletes spam/promotional messages** using DeepSeek API.
 - **Sends a welcome message** when someone types `+`
 
 ---
@@ -11,9 +11,7 @@ A Telegram group moderation bot that:
 ```
 bot.py           ← main bot logic
 requirements.txt ← Python dependencies
-Dockerfile       ← builds the container (Ollama + Python)
 start.sh         ← starts Ollama, pulls model, then starts bot
-railway.toml     ← Railway deployment config
 ```
 
 ---
@@ -86,45 +84,3 @@ Bot is running...
 | Hobby | ~$5/mo | Enough for this bot |
 
 The bot uses ~500MB RAM at idle. `llama3.2:1b` is lighter if you hit memory limits.
-
----
-
-## 🧪 Testing locally (optional)
-
-```bash
-# Install Ollama: https://ollama.com
-ollama pull llama3.2
-
-# Install Python deps
-pip install -r requirements.txt
-
-# Set env var and run
-BOT_TOKEN=your_token_here python bot.py
-```
-
----
-
-## ⚙️ Customisation
-
-### Change the welcome message
-Edit the `WELCOME_MESSAGE` variable in `bot.py`.
-
-### Change spam detection sensitivity
-Edit the `SPAM_CHECK_PROMPT` in `bot.py`. Add more examples of what counts as spam or legitimate.
-
-### Use a lighter/faster model
-Set `OLLAMA_MODEL=llama3.2:1b` in Railway variables. Uses less RAM, slightly less accurate.
-
-### Notify user when their message is deleted
-Uncomment the block in `handle_message()` in `bot.py`.
-
----
-
-## 🛠 Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| Bot doesn't delete messages | Make sure bot is Admin with "Delete Messages" permission |
-| Bot doesn't read messages | Turn off Group Privacy in BotFather |
-| Ollama timeout errors | Model is slow to respond — switch to `llama3.2:1b` |
-| Bot crashes on Railway | Check Logs tab, may need more RAM — upgrade Railway plan |
