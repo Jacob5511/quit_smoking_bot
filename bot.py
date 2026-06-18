@@ -161,6 +161,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not message or not message.text:
         return
 
+    if message.is_automatic_forward:
+        logger.info("Ignored automatic linked channel post")
+        return
+
     if message.chat.type not in ("group", "supergroup"):
         return
 
