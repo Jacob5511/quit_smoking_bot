@@ -1,11 +1,7 @@
 # 🍺❌ Quit Smoking Support Bot
 
 A Telegram group moderation bot that:
-<<<<<<< HEAD
-- **Deletes spam/promotional messages** using DeepSeek API.
-=======
 - **Deletes spam/promotional messages** using DeepSeek API
->>>>>>> e2c78c43ab6eee1648588a0a44c4d0018fe3e3e4
 - **Sends a welcome message** when someone types `+`
 
 ---
