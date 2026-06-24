@@ -107,9 +107,6 @@ def is_keyword_spam(text: str) -> bool:
     return any(k.lower() in t for k in SPAM_KEYWORDS)
 
 def get_user_identity(message: Message) -> str:
-    """
-    Build one string containing the user's visible name and username.
-    """
     user = message.from_user
 
     if user is None:
