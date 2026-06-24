@@ -32,11 +32,7 @@ muted_cache = {}  # msg_id -> {chat_id, user_id, username, text}
 
 WELCOME_MESSAGE = """
 Зарегистрироваться на БЕСПЛАТНЫЙ мастер-класс можно здесь:
-<<<<<<< HEAD
-https://bothelp.cc/mini?domain=allencarrlife&id=3
-=======
 https://bothelp.cc/mini?domain=aleksfomin&id=2
->>>>>>> e2c78c43ab6eee1648588a0a44c4d0018fe3e3e4
 """.strip()
 
 SPAM_KEYWORDS = [
