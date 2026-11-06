@@ -39,6 +39,34 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(configs[0].token, "secret")
         self.assertEqual(configs[0].admin_id, 42)
 
+    def test_duplicate_token_starts_only_one_poller(self):
+        raw = json.dumps([
+            {
+                "name": "smoking",
+                "token_env": "SMOKING_TOKEN",
+                "admin_id_env": "ADMIN_ID",
+                "default_profile": "quit_smoking",
+            },
+            {
+                "name": "drinking",
+                "token_env": "DRINKING_TOKEN",
+                "admin_id_env": "ADMIN_ID",
+                "default_profile": "quit_drinking",
+            },
+        ])
+        with patch.dict(os.environ, {
+            "BOTS_CONFIG_JSON": raw,
+            "SMOKING_TOKEN": "same-secret",
+            "DRINKING_TOKEN": "same-secret",
+            "ADMIN_ID": "42",
+        }, clear=False):
+            configs = load_bot_configs({
+                "quit_smoking": Profile("quit_smoking"),
+                "quit_drinking": Profile("quit_drinking"),
+            })
+        self.assertEqual(len(configs), 1)
+        self.assertEqual(configs[0].default_profile, "quit_smoking")
+
     def test_keyword_matching_is_case_insensitive(self):
         profile = Profile("test", keywords=("Работа",))
         self.assertTrue(is_keyword_spam("РАБОТА из дома", profile))
@@ -70,6 +98,25 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class StoreTests(unittest.TestCase):
+    def test_chat_profile_override_survives_reopening_database(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = str(Path(folder) / "moderation.db")
+            store = ModerationStore(path)
+            store.set_chat_profile("bot", -1007, "quit_drinking")
+            store.close()
+            reopened = ModerationStore(path)
+            self.assertEqual(reopened.get_chat_profile("bot", -1007), "quit_drinking")
+            config = BotConfig("bot", "token", 1, "quit_smoking")
+            profiles = {
+                "quit_smoking": Profile("quit_smoking"),
+                "quit_drinking": Profile("quit_drinking"),
+            }
+            self.assertEqual(
+                profile_for_chat(config, profiles, -1007, reopened).name,
+                "quit_drinking",
+            )
+            reopened.close()
+
     def test_action_survives_reopening_database(self):
         with tempfile.TemporaryDirectory() as folder:
             path = str(Path(folder) / "moderation.db")

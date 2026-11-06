@@ -17,6 +17,7 @@ from telegram.ext import (
     Application,
     ApplicationBuilder,
     CallbackQueryHandler,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
@@ -29,6 +30,9 @@ logging.basicConfig(
     level=logging.INFO,
 )
 logger = logging.getLogger(__name__)
+# httpx includes the complete Telegram Bot API URL in INFO logs. That URL
+# contains the bot token, so keep routine request logging out of production.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 DEFAULT_KEYWORDS = (
     "заработок", "от 1000 рублей", "доп. доход", "$",
@@ -118,6 +122,16 @@ class ModerationStore:
             )
             """
         )
+        self.connection.execute(
+            """
+            CREATE TABLE IF NOT EXISTS chat_profiles (
+                bot_name TEXT NOT NULL,
+                chat_id INTEGER NOT NULL,
+                profile_name TEXT NOT NULL,
+                PRIMARY KEY (bot_name, chat_id)
+            )
+            """
+        )
         columns = {
             row[1] for row in self.connection.execute("PRAGMA table_info(moderation_actions)")
         }
@@ -137,6 +151,29 @@ class ModerationStore:
             self.connection.execute(
                 "ALTER TABLE moderation_actions ADD COLUMN admin_message_id INTEGER"
             )
+        self.connection.commit()
+
+    def get_chat_profile(self, bot_name: str, chat_id: int) -> str | None:
+        row = self.connection.execute(
+            """
+            SELECT profile_name
+            FROM chat_profiles
+            WHERE bot_name = ? AND chat_id = ?
+            """,
+            (bot_name, chat_id),
+        ).fetchone()
+        return str(row[0]) if row else None
+
+    def set_chat_profile(self, bot_name: str, chat_id: int, profile_name: str) -> None:
+        self.connection.execute(
+            """
+            INSERT INTO chat_profiles (bot_name, chat_id, profile_name)
+            VALUES (?, ?, ?)
+            ON CONFLICT(bot_name, chat_id)
+            DO UPDATE SET profile_name = excluded.profile_name
+            """,
+            (bot_name, chat_id, profile_name),
+        )
         self.connection.commit()
 
     def add(
@@ -321,11 +358,58 @@ def load_bot_configs(profiles: dict[str, Profile]) -> list[BotConfig]:
 
         configs.append(BotConfig(name, token, int(admin_id), default_profile, chat_profiles))
         names.add(name)
-    return configs
+    # Telegram permits only one getUpdates poller for a token. Two logical
+    # profiles may still refer to the same Telegram bot account, so collapse
+    # those entries into one runtime and let chat-level profile selection
+    # decide how that bot behaves in each group.
+    unique: list[BotConfig] = []
+    token_indexes: dict[str, int] = {}
+    for config in configs:
+        existing_index = token_indexes.get(config.token)
+        if existing_index is None:
+            token_indexes[config.token] = len(unique)
+            unique.append(config)
+            continue
+
+        existing = unique[existing_index]
+        if existing.admin_id != config.admin_id:
+            raise ValueError(
+                f"Bot configs {existing.name!r} and {config.name!r} use the same token "
+                "but different admin IDs"
+            )
+        merged_chat_profiles = dict(existing.chat_profiles)
+        for chat_id, profile_name in config.chat_profiles.items():
+            current = merged_chat_profiles.get(chat_id)
+            if current and current != profile_name:
+                raise ValueError(
+                    f"Conflicting profiles for chat {chat_id}: {current!r} and {profile_name!r}"
+                )
+            merged_chat_profiles[chat_id] = profile_name
+        unique[existing_index] = BotConfig(
+            existing.name,
+            existing.token,
+            existing.admin_id,
+            existing.default_profile,
+            merged_chat_profiles,
+        )
+        logger.warning(
+            "Bot configs %s and %s use the same Telegram account; starting one poller. "
+            "Use /profile in each group to select %s when needed.",
+            existing.name,
+            config.name,
+            config.default_profile,
+        )
+    return unique
 
 
-def profile_for_chat(config: BotConfig, profiles: dict[str, Profile], chat_id: int) -> Profile:
-    profile_name = config.chat_profiles.get(str(chat_id), config.default_profile)
+def profile_for_chat(
+    config: BotConfig,
+    profiles: dict[str, Profile],
+    chat_id: int,
+    store: ModerationStore | None = None,
+) -> Profile:
+    stored_profile = store.get_chat_profile(config.name, chat_id) if store else None
+    profile_name = stored_profile or config.chat_profiles.get(str(chat_id), config.default_profile)
     return profiles[profile_name]
 
 
@@ -448,7 +532,7 @@ def build_application(
         if sender.kind == "sender_chat" and sender.id == message.chat_id:
             return
 
-        profile = profile_for_chat(config, profiles, message.chat_id)
+        profile = profile_for_chat(config, profiles, message.chat_id, store)
         text = message.text.strip()
         if profile.welcome_trigger and text == profile.welcome_trigger:
             if profile.welcome_message:
@@ -469,6 +553,39 @@ def build_application(
             return
         if profile.ai_enabled and await is_ai_spam(client, model, text, sender.label, profile):
             await block_and_notify(context, message, sender)
+
+    async def handle_profile(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        user = update.effective_user
+        chat = update.effective_chat
+        if not message or not user or not chat:
+            return
+        if user.id != config.admin_id:
+            await message.reply_text("Only the configured administrator can change profiles.")
+            return
+        if chat.type not in ("group", "supergroup"):
+            await message.reply_text("Run this command inside the group you want to configure.")
+            return
+
+        if not context.args:
+            current = profile_for_chat(config, profiles, chat.id, store)
+            available = ", ".join(sorted(profiles))
+            await message.reply_text(
+                f"Current profile: {current.name}\n"
+                f"Chat ID: {chat.id}\n"
+                f"Available: {available}\n\n"
+                "Use /profile profile_name to change it."
+            )
+            return
+
+        profile_name = context.args[0].strip()
+        if profile_name not in profiles:
+            available = ", ".join(sorted(profiles))
+            await message.reply_text(f"Unknown profile. Available: {available}")
+            return
+        store.set_chat_profile(config.name, chat.id, profile_name)
+        await message.reply_text(f"Profile for this chat is now: {profile_name}")
+        logger.info("Bot %s assigned profile %s to chat %s", config.name, profile_name, chat.id)
 
     async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         query = update.callback_query
@@ -526,6 +643,7 @@ def build_application(
                 await query.answer(f"Unblock failed: {exc}", show_alert=True)
 
     application = ApplicationBuilder().token(config.token).build()
+    application.add_handler(CommandHandler("profile", handle_profile))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(keep|unmute)\|"))
     return application

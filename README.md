@@ -13,6 +13,9 @@ default profile or override it with another profile.
 - If an administrator does not choose **Stays muted** or **Unmute** within 72
   hours, the review is automatically finalized as **Stays muted**. Set
   `REVIEW_TIMEOUT_MINUTES` to change that deadline.
+- If two configuration entries contain the same Telegram token, the service
+  automatically starts only one polling loop. Telegram does not allow two
+  `getUpdates` pollers for one bot account.
 - A callback is accepted only from that bot's configured admin.
 - Text spam sent by non-admin bot accounts is deleted and the bot account is banned.
 - Text spam posted on behalf of a channel is deleted and that channel identity is banned.
@@ -91,6 +94,19 @@ Add another entry to `profiles.json`. A custom profile may supply:
 Then route a chat ID to `another_business` in `BOTS_CONFIG_JSON`. To change
 profiles without committing a file, put the complete profiles object in the
 optional Railway variable `PROFILES_JSON`.
+
+You can also select a profile from Telegram. The configured administrator runs
+the following once inside the relevant group or linked discussion group:
+
+```text
+/profile quit_smoking
+/profile quit_drinking
+/profile general_moderation
+```
+
+Running `/profile` without an argument shows the current profile, the chat ID,
+and the available profiles. The selection is stored in SQLite and survives
+deployments and restarts.
 
 ## Telegram limits
 
