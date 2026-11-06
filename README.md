@@ -6,16 +6,15 @@ default profile or override it with another profile.
 
 ## What is already configured
 
-- `smoking` bot -> `quit_smoking` profile and the current smoking welcome link.
-- `drinking` bot -> `quit_drinking` profile and the current drinking welcome link.
+- `@easy_brosit_kurit_bot` -> `quit_smoking` profile and the smoking welcome link.
+- `@brosit_pit_bot` -> `quit_drinking` profile and the drinking welcome link.
 - `general_moderation` profile -> reusable moderation without a `+` business link.
 - Admin decisions are stored in SQLite, so the buttons continue to work after a restart.
 - If an administrator does not choose **Stays muted** or **Unmute** within 72
   hours, the review is automatically finalized as **Stays muted**. Set
   `REVIEW_TIMEOUT_MINUTES` to change that deadline.
-- If two configuration entries contain the same Telegram token, the service
-  automatically starts only one polling loop. Telegram does not allow two
-  `getUpdates` pollers for one bot account.
+- Duplicate tokens are rejected. Each token is checked against its configured
+  `expected_username` before polling starts, preventing accidental test-bot deployment.
 - A callback is accepted only from that bot's configured admin.
 - Text spam sent by non-admin bot accounts is deleted and the bot account is banned.
 - Text spam posted on behalf of a channel is deleted and that channel identity is banned.
@@ -34,15 +33,25 @@ DEEPSEEK_API_KEY=...
 DEEPSEEK_MODEL=deepseek-v4-flash
 DATABASE_PATH=/data/moderation.db
 REVIEW_TIMEOUT_MINUTES=4320
-SMOKING_BOT_TOKEN=...
-SMOKING_ADMIN_ID=...
+BOT_TOKEN=...the token for easy_brosit_kurit_bot...
 DRINKING_BOT_TOKEN=...
-DRINKING_ADMIN_ID=...
-BOTS_CONFIG_JSON=[{"name":"smoking","token_env":"SMOKING_BOT_TOKEN","admin_id_env":"SMOKING_ADMIN_ID","default_profile":"quit_smoking","chat_profiles":{}},{"name":"drinking","token_env":"DRINKING_BOT_TOKEN","admin_id_env":"DRINKING_ADMIN_ID","default_profile":"quit_drinking","chat_profiles":{}}]
+ADMIN_ID=...your personal Telegram user ID...
+BOTS_CONFIG_JSON=[{"name":"smoking","token_env":"BOT_TOKEN","admin_id_env":"ADMIN_ID","expected_username":"easy_brosit_kurit_bot","default_profile":"quit_smoking","chat_profiles":{}},{"name":"drinking","token_env":"DRINKING_BOT_TOKEN","admin_id_env":"ADMIN_ID","expected_username":"brosit_pit_bot","default_profile":"quit_drinking","chat_profiles":{}}]
 ```
 
 Mount a Railway volume at `/data` and run exactly **one replica**. Two replicas
 would poll Telegram with the same tokens and conflict.
+
+`BOTS_CONFIG_JSON` is a Railway environment variable containing a list of bots,
+their credential variable names, and their default moderation profiles. It is
+not a file. Both entries use the same `ADMIN_ID` because one person receives
+both bots' moderation alerts. No separate smoking/drinking admin IDs are needed.
+The existing groups need no `/profile` setup: each bot already has its correct default.
+
+Send `/start` or `/status` to either bot for a visible reply. In a group,
+`/status` also reports its delete/restrict permissions. Logs show the verified
+username at startup, a runtime summary every minute, received update metadata,
+and successful welcome/status replies, without logging tokens or message text.
 
 After the combined service is confirmed working, stop the two old services.
 Do not run an old service and this service with the same token at the same time.
@@ -57,8 +66,9 @@ normal behavior everywhere but use general moderation in one other group:
 [
   {
     "name": "smoking",
-    "token_env": "SMOKING_BOT_TOKEN",
-    "admin_id_env": "SMOKING_ADMIN_ID",
+    "token_env": "BOT_TOKEN",
+    "admin_id_env": "ADMIN_ID",
+    "expected_username": "easy_brosit_kurit_bot",
     "default_profile": "quit_smoking",
     "chat_profiles": {
       "-1001234567890": "general_moderation"
@@ -67,7 +77,8 @@ normal behavior everywhere but use general moderation in one other group:
   {
     "name": "drinking",
     "token_env": "DRINKING_BOT_TOKEN",
-    "admin_id_env": "DRINKING_ADMIN_ID",
+    "admin_id_env": "ADMIN_ID",
+    "expected_username": "brosit_pit_bot",
     "default_profile": "quit_drinking",
     "chat_profiles": {}
   }

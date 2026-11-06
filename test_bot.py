@@ -3,7 +3,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
+from types import SimpleNamespace
 
 from bot import (
     BotConfig,
@@ -13,6 +14,8 @@ from bot import (
     is_keyword_spam,
     load_bot_configs,
     profile_for_chat,
+    validate_bot_identity,
+    build_application,
 )
 
 
@@ -39,7 +42,7 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(configs[0].token, "secret")
         self.assertEqual(configs[0].admin_id, 42)
 
-    def test_duplicate_token_starts_only_one_poller(self):
+    def test_duplicate_token_is_rejected_instead_of_losing_a_profile(self):
         raw = json.dumps([
             {
                 "name": "smoking",
@@ -60,12 +63,32 @@ class ConfigurationTests(unittest.TestCase):
             "DRINKING_TOKEN": "same-secret",
             "ADMIN_ID": "42",
         }, clear=False):
-            configs = load_bot_configs({
-                "quit_smoking": Profile("quit_smoking"),
-                "quit_drinking": Profile("quit_drinking"),
-            })
-        self.assertEqual(len(configs), 1)
-        self.assertEqual(configs[0].default_profile, "quit_smoking")
+            with self.assertRaisesRegex(ValueError, "share a token"):
+                load_bot_configs({
+                    "quit_smoking": Profile("quit_smoking"),
+                    "quit_drinking": Profile("quit_drinking"),
+                })
+
+    def test_test_bot_credential_cannot_start_as_production(self):
+        config = BotConfig("smoking", "secret", 1, "quit_smoking", expected_username="easy_brosit_kurit_bot")
+        with self.assertRaisesRegex(ValueError, "Wrong bot"):
+            validate_bot_identity(config, "Test_before_production_bot")
+        validate_bot_identity(config, "easy_brosit_kurit_bot")
+
+    def test_distinct_bots_share_one_admin_but_keep_profiles(self):
+        raw = json.dumps([
+            {"name": "smoking", "token_env": "TEST_SMOKING", "admin_id_env": "TEST_ADMIN",
+             "default_profile": "quit_smoking", "expected_username": "easy_brosit_kurit_bot"},
+            {"name": "drinking", "token_env": "TEST_DRINKING", "admin_id_env": "TEST_ADMIN",
+             "default_profile": "quit_drinking", "expected_username": "brosit_pit_bot"},
+        ])
+        with patch.dict(os.environ, {"BOTS_CONFIG_JSON": raw, "TEST_SMOKING": "one",
+                                    "TEST_DRINKING": "two", "TEST_ADMIN": "42"}):
+            configs = load_bot_configs({name: Profile(name) for name in ("quit_smoking", "quit_drinking")})
+        self.assertEqual(len(configs), 2)
+        self.assertEqual([c.admin_id for c in configs], [42, 42])
+        self.assertEqual([c.default_profile for c in configs], ["quit_smoking", "quit_drinking"])
+        self.assertEqual(configs[1].expected_username, "brosit_pit_bot")
 
     def test_keyword_matching_is_case_insensitive(self):
         profile = Profile("test", keywords=("Работа",))
@@ -95,6 +118,24 @@ class ConfigurationTests(unittest.TestCase):
         message.from_user = Mock(id=1087968824, is_bot=True)
         sender = get_sender(message)
         self.assertEqual((sender.kind, sender.id), ("sender_chat", -1009))
+
+
+class CommandTests(unittest.IsolatedAsyncioTestCase):
+    async def test_start_and_status_reply_and_report_group_permissions(self):
+        with tempfile.TemporaryDirectory() as folder:
+            store = ModerationStore(str(Path(folder) / "moderation.db"))
+            config = BotConfig("smoking", "12345:fake", 42, "quit_smoking")
+            app = build_application(config, {"quit_smoking": Profile("quit_smoking")}, Mock(), "test", store, 4320)
+            handler = next(h for h in app.handlers[0] if getattr(h, "commands", None) == frozenset({"start", "status"}))
+            message = SimpleNamespace(chat_id=-100, chat=SimpleNamespace(type="supergroup"), reply_text=AsyncMock())
+            bot = SimpleNamespace(username="easy_brosit_kurit_bot", id=5,
+                                  get_chat_member=AsyncMock(return_value=SimpleNamespace(status="administrator", can_delete_messages=True, can_restrict_members=True)))
+            await handler.callback(SimpleNamespace(effective_message=message), SimpleNamespace(bot=bot))
+            reply = message.reply_text.call_args.args[0]
+            self.assertIn("@easy_brosit_kurit_bot", reply)
+            self.assertIn("Delete messages: True", reply)
+            self.assertIn("Restrict members: True", reply)
+            store.close()
 
 
 class StoreTests(unittest.TestCase):

@@ -4,6 +4,7 @@ import logging
 import os
 import signal
 import sqlite3
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from telegram.ext import (
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -28,6 +30,7 @@ load_dotenv()
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    stream=sys.stdout,
 )
 logger = logging.getLogger(__name__)
 # httpx includes the complete Telegram Bot API URL in INFO logs. That URL
@@ -91,6 +94,7 @@ class BotConfig:
     admin_id: int
     default_profile: str
     chat_profiles: dict[str, str] = field(default_factory=dict)
+    expected_username: str | None = None
 
 
 @dataclass(frozen=True)
@@ -356,50 +360,28 @@ def load_bot_configs(profiles: dict[str, Profile]) -> list[BotConfig]:
         if not admin_id:
             raise ValueError(f"Railway variable {admin_id_env} is missing")
 
-        configs.append(BotConfig(name, token, int(admin_id), default_profile, chat_profiles))
+        expected_username = str(values.get("expected_username", "")).strip().lstrip("@") or None
+        configs.append(BotConfig(name, token.strip(), int(admin_id), default_profile, chat_profiles, expected_username))
         names.add(name)
-    # Telegram permits only one getUpdates poller for a token. Two logical
-    # profiles may still refer to the same Telegram bot account, so collapse
-    # those entries into one runtime and let chat-level profile selection
-    # decide how that bot behaves in each group.
-    unique: list[BotConfig] = []
-    token_indexes: dict[str, int] = {}
+    # Treat duplicated credentials as a configuration error, never silently
+    # discard one business profile or substitute one Telegram identity.
+    token_names: dict[str, str] = {}
     for config in configs:
-        existing_index = token_indexes.get(config.token)
-        if existing_index is None:
-            token_indexes[config.token] = len(unique)
-            unique.append(config)
-            continue
-
-        existing = unique[existing_index]
-        if existing.admin_id != config.admin_id:
+        if config.token in token_names:
             raise ValueError(
-                f"Bot configs {existing.name!r} and {config.name!r} use the same token "
-                "but different admin IDs"
+                f"Bot configs {token_names[config.token]!r} and {config.name!r} share a token. "
+                "Use the correct distinct bot tokens, or one entry with chat_profiles."
             )
-        merged_chat_profiles = dict(existing.chat_profiles)
-        for chat_id, profile_name in config.chat_profiles.items():
-            current = merged_chat_profiles.get(chat_id)
-            if current and current != profile_name:
-                raise ValueError(
-                    f"Conflicting profiles for chat {chat_id}: {current!r} and {profile_name!r}"
-                )
-            merged_chat_profiles[chat_id] = profile_name
-        unique[existing_index] = BotConfig(
-            existing.name,
-            existing.token,
-            existing.admin_id,
-            existing.default_profile,
-            merged_chat_profiles,
+        token_names[config.token] = config.name
+    return configs
+
+
+def validate_bot_identity(config: BotConfig, username: str | None) -> None:
+    if config.expected_username and (username or "").casefold() != config.expected_username.casefold():
+        raise ValueError(
+            f"Wrong bot for {config.name}: expected @{config.expected_username}, "
+            f"received @{username}. Correct the token in Railway."
         )
-        logger.warning(
-            "Bot configs %s and %s use the same Telegram account; starting one poller. "
-            "Use /profile in each group to select %s when needed.",
-            existing.name,
-            config.name,
-            config.default_profile,
-        )
-    return unique
 
 
 def profile_for_chat(
@@ -464,6 +446,38 @@ def build_application(
     store: ModerationStore,
     review_timeout_minutes: int,
 ) -> Application:
+    async def log_update(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.application.bot_data["updates_received"] += 1
+        message = update.effective_message
+        logger.info(
+            "Received update bot=@%s update=%s chat=%s type=%s text=%s caption=%s",
+            context.bot.username, update.update_id,
+            update.effective_chat.id if update.effective_chat else None,
+            update.effective_chat.type if update.effective_chat else None,
+            bool(message and message.text), bool(message and message.caption),
+        )
+
+    async def handle_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        message = update.effective_message
+        if not message:
+            return
+        profile = profile_for_chat(config, profiles, message.chat_id, store)
+        info = f"Moderator @{context.bot.username} is responding.\nProfile: {profile.name}"
+        if message.chat.type in ("group", "supergroup"):
+            member = await context.bot.get_chat_member(message.chat_id, context.bot.id)
+            info += (
+                f"\nRole: {member.status}"
+                f"\nDelete messages: {bool(getattr(member, 'can_delete_messages', False))}"
+                f"\nRestrict members: {bool(getattr(member, 'can_restrict_members', False))}"
+            )
+        await message.reply_text(info)
+        logger.info("Status reply sent bot=@%s chat=%s", context.bot.username, message.chat_id)
+
+    async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        # Do not include request URLs or message contents in logs.
+        detail = str(context.error).replace(config.token, "[REDACTED]")
+        logger.error("Update failed bot=%s error=%s detail=%s", config.name, type(context.error).__name__, detail)
+
     async def block_and_notify(
         context: ContextTypes.DEFAULT_TYPE,
         message: Message,
@@ -522,6 +536,7 @@ def build_application(
         if not message or not message.text:
             return
         if message.is_automatic_forward or message.chat.type not in ("group", "supergroup"):
+            logger.info("Skipped update bot=%s reason=automatic_forward_or_not_group", config.name)
             return
 
         sender = get_sender(message)
@@ -537,6 +552,7 @@ def build_application(
         if profile.welcome_trigger and text == profile.welcome_trigger:
             if profile.welcome_message:
                 await message.reply_text(profile.welcome_message)
+                logger.info("Welcome reply sent bot=%s chat=%s profile=%s", config.name, message.chat_id, profile.name)
             return
 
         if sender.kind in ("user", "bot"):
@@ -546,6 +562,7 @@ def build_application(
                 logger.exception("Could not check sender role; allowing the message")
                 return
             if member.status in ("administrator", "creator"):
+                logger.info("Skipped moderation bot=%s chat=%s reason=administrator", config.name, message.chat_id)
                 return
 
         if is_keyword_spam(text, profile):
@@ -643,9 +660,13 @@ def build_application(
                 await query.answer(f"Unblock failed: {exc}", show_alert=True)
 
     application = ApplicationBuilder().token(config.token).build()
+    application.bot_data["updates_received"] = 0
+    application.add_handler(TypeHandler(Update, log_update), group=-1)
+    application.add_handler(CommandHandler(["start", "status"], handle_status))
     application.add_handler(CommandHandler("profile", handle_profile))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(keep|unmute)\|"))
+    application.add_error_handler(handle_error)
     return application
 
 
@@ -657,6 +678,11 @@ async def auto_finalize_reviews(
     stop_event: asyncio.Event,
 ) -> None:
     while not stop_event.is_set():
+        logger.info(
+            "Runtime bot=@%s polling=%s updates_received=%s",
+            application.bot.username, application.updater.running,
+            application.bot_data.get("updates_received", 0),
+        )
         for pending in store.expired_pending(config.name, int(time.time())):
             if not store.finish_if_pending(pending["action_id"], "kept_muted"):
                 continue
@@ -723,7 +749,14 @@ async def run() -> None:
         for config, application in zip(configs, applications):
             await application.initialize()
             initialized_applications.append(application)
-            await application.updater.start_polling(drop_pending_updates=True)
+            validate_bot_identity(config, application.bot.username)
+            logger.info(
+                "Verified identity bot=%s username=@%s id=%s profile=%s",
+                config.name, application.bot.username, application.bot.id, config.default_profile,
+            )
+        # Validate every account before starting any poller. Keep queued updates.
+        for config, application in zip(configs, applications):
+            await application.updater.start_polling(drop_pending_updates=False, allowed_updates=Update.ALL_TYPES)
             await application.start()
             review_tasks.append(
                 asyncio.create_task(
