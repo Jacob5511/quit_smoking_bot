@@ -1,0 +1,19 @@
+{
+  "quit_smoking": {
+    "moderation_mode": "external_ads",
+    "welcome_trigger": "+",
+    "welcome_message": "Зарегистрироваться на БЕСПЛАТНЫЙ мастер-класс можно здесь:\nhttps://bothelp.cc/mini?domain=aleksfomin&id=2"
+  },
+  "quit_drinking": {
+    "moderation_mode": "external_ads",
+    "welcome_trigger": "+",
+    "welcome_message": "Зарегистрироваться на БЕСПЛАТНЫЙ мастер-класс можно здесь:\nhttps://bothelp.cc/mini?domain=allencarrlife&id=3"
+  },
+  "general_moderation": {
+    "moderation_mode": "general",
+    "welcome_trigger": null,
+    "welcome_message": null
+  }
+}
+
+

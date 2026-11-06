@@ -1,86 +1,120 @@
-# 🍺❌ Quit Smoking Support Bot
+# Unified Telegram moderator
 
-A Telegram group moderation bot that:
-- **Deletes spam/promotional messages** using DeepSeek API
-- **Sends a welcome message** when someone types `+`
+One Python process runs both existing Telegram bot identities, so Railway needs
+only one service. Each bot may serve many groups. A group can use the bot's
+default profile or override it with another profile.
 
----
+## What is already configured
 
-## 📁 Files
+- `smoking` bot -> `quit_smoking` profile and the current smoking welcome link.
+- `drinking` bot -> `quit_drinking` profile and the current drinking welcome link.
+- `general_moderation` profile -> reusable moderation without a `+` business link.
+- Admin decisions are stored in SQLite, so the buttons continue to work after a restart.
+- If an administrator does not choose **Stays muted** or **Unmute** within 72
+  hours, the review is automatically finalized as **Stays muted**. Set
+  `REVIEW_TIMEOUT_MINUTES` to change that deadline.
+- A callback is accepted only from that bot's configured admin.
+- Text spam sent by non-admin bot accounts is deleted and the bot account is banned.
+- Text spam posted on behalf of a channel is deleted and that channel identity is banned.
+- Automatic copies of the linked channel's own posts and anonymous group-admin
+  messages remain protected from these rules.
 
-```
-bot.py           ← main bot logic
-requirements.txt ← Python dependencies
-start.sh         ← starts Ollama, pulls model, then starts bot
-```
+Both bot tokens remain separate. This keeps the existing bot usernames and
+Telegram groups unchanged while combining their hosting.
 
----
+## Railway variables
 
-## 🔧 Step 1 — Create your Telegram Bot
+Create one Railway service from this folder/repository and add:
 
-1. Open Telegram and search for **@BotFather**
-2. Send `/newbot`
-3. Give it a name (e.g. `Quit Drinking Support`)
-4. Give it a username (e.g. `@myquitdrinkingbot`)
-5. BotFather will give you a **token** like `123456:ABCdef...` — save it!
-
-**Important:** After creating the bot:
-- Go to BotFather → `/mybots` → your bot → *Bot Settings* → **Group Privacy → Turn OFF**
-  (This lets the bot read all messages, not just commands)
-
----
-
-## 👑 Step 2 — Add bot to your group as Admin
-
-1. Add the bot to your Telegram group
-2. Make it an **Admin** with permission to **Delete Messages**
-   - Group → Edit → Administrators → Add Administrator → find your bot → enable "Delete Messages"
-
----
-
-## 🚀 Step 3 — Deploy to Railway
-
-### 3a. Push code to GitHub
-```bash
-git init
-git add .
-git commit -m "init"
-# Create a new repo on github.com, then:
-git remote add origin https://github.com/YOUR_USERNAME/YOUR_REPO.git
-git push -u origin main
+```text
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-v4-flash
+DATABASE_PATH=/data/moderation.db
+REVIEW_TIMEOUT_MINUTES=4320
+SMOKING_BOT_TOKEN=...
+SMOKING_ADMIN_ID=...
+DRINKING_BOT_TOKEN=...
+DRINKING_ADMIN_ID=...
+BOTS_CONFIG_JSON=[{"name":"smoking","token_env":"SMOKING_BOT_TOKEN","admin_id_env":"SMOKING_ADMIN_ID","default_profile":"quit_smoking","chat_profiles":{}},{"name":"drinking","token_env":"DRINKING_BOT_TOKEN","admin_id_env":"DRINKING_ADMIN_ID","default_profile":"quit_drinking","chat_profiles":{}}]
 ```
 
-### 3b. Create Railway project
-1. Go to **railway.app** and sign up / log in
-2. Click **New Project** → **Deploy from GitHub repo**
-3. Select your repo
-4. Railway will detect the Dockerfile automatically
+Mount a Railway volume at `/data` and run exactly **one replica**. Two replicas
+would poll Telegram with the same tokens and conflict.
 
-### 3c. Set environment variables
-In Railway → your service → **Variables** tab, add:
+After the combined service is confirmed working, stop the two old services.
+Do not run an old service and this service with the same token at the same time.
 
-| Variable | Value |
-|----------|-------|
-| `BOT_TOKEN` | `123456:ABCdef...` (from BotFather) |
-| `OLLAMA_MODEL` | `llama3.2` (or `llama3.2:1b` for faster/cheaper) |
-| `OLLAMA_URL` | `http://localhost:11434` |
+## Use one bot differently in a particular group
 
-### 3d. Deploy
-Railway will build and deploy automatically. First deploy takes ~5 minutes (downloading the LLM model).
+Telegram chat IDs are negative numbers, usually beginning with `-100`. Put a
+mapping in that bot's `chat_profiles`. For example, the smoking bot can keep its
+normal behavior everywhere but use general moderation in one other group:
 
-Check the **Logs** tab — you should see:
+```json
+[
+  {
+    "name": "smoking",
+    "token_env": "SMOKING_BOT_TOKEN",
+    "admin_id_env": "SMOKING_ADMIN_ID",
+    "default_profile": "quit_smoking",
+    "chat_profiles": {
+      "-1001234567890": "general_moderation"
+    }
+  },
+  {
+    "name": "drinking",
+    "token_env": "DRINKING_BOT_TOKEN",
+    "admin_id_env": "DRINKING_ADMIN_ID",
+    "default_profile": "quit_drinking",
+    "chat_profiles": {}
+  }
+]
 ```
-Ollama is up.
-Pulling model: llama3.2...
-Bot is running...
+
+## Add another business or purpose
+
+Add another entry to `profiles.json`. A custom profile may supply:
+
+```json
+{
+  "another_business": {
+    "moderation_mode": "custom",
+    "system_prompt": "Your complete classification rules. Require exactly SPAM or LEGITIMATE.",
+    "welcome_trigger": "+",
+    "welcome_message": "This business's message and link",
+    "keywords": ["known spam phrase"],
+    "ai_enabled": true
+  }
+}
 ```
 
----
+Then route a chat ID to `another_business` in `BOTS_CONFIG_JSON`. To change
+profiles without committing a file, put the complete profiles object in the
+optional Railway variable `PROFILES_JSON`.
 
-## 💰 Railway Cost Estimate
+## Telegram limits
 
-| Plan | Price | Notes |
-|------|-------|-------|
-| Hobby | ~$5/mo | Enough for this bot |
+- Group moderation works when the bot is a group admin with permission to delete
+  messages and restrict members, and BotFather privacy mode is disabled.
+- To moderate messages authored by other bots, also enable **Bot-to-Bot
+  Communication Mode** for the moderator in BotFather. Telegram normally does
+  not deliver bot-authored group messages to another bot without that mode.
+- Telegram channel comments are messages in the channel's linked discussion
+  group. Add the bot there as an admin. Ordinary channel subscribers cannot post
+  directly in a broadcast channel.
+- A bot sees only chats where it has been added. This service does not combine
+  the two Telegram identities or their BotFather settings; it only combines the
+  process that runs them.
 
-The bot uses ~500MB RAM at idle. `llama3.2:1b` is lighter if you hit memory limits.
+## Local verification
+
+Copy `.env.example` to `.env`, use test credentials, then run:
+
+```text
+python -m unittest -v
+python bot.py
+```
+
+The automated tests do not contact Telegram or DeepSeek. A final deployment
+check should be performed in one test group before disabling the old services.
+
