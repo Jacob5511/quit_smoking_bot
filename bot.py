@@ -424,13 +424,20 @@ async def is_ai_spam(client: AsyncOpenAI, model: str, text: str, identity: str, 
         response = await client.chat.completions.create(
             model=model,
             temperature=0,
-            max_tokens=5,
+            max_tokens=16,
+            extra_body={"thinking": {"type": "disabled"}},
             messages=[
                 {"role": "system", "content": profile.prompt},
                 {"role": "user", "content": user_content},
             ],
         )
         verdict = (response.choices[0].message.content or "").strip().upper().rstrip(".")
+        if verdict not in ("SPAM", "LEGITIMATE"):
+            logger.error(
+                "DeepSeek returned no valid verdict for profile %s; finish_reason=%s; allowing the message",
+                profile.name, response.choices[0].finish_reason,
+            )
+            return False
         logger.info("DeepSeek verdict for profile %s: %r", profile.name, verdict)
         return verdict == "SPAM"
     except Exception:

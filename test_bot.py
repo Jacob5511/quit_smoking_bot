@@ -12,6 +12,7 @@ from bot import (
     Profile,
     get_sender,
     is_keyword_spam,
+    is_ai_spam,
     load_bot_configs,
     profile_for_chat,
     validate_bot_identity,
@@ -118,6 +119,27 @@ class ConfigurationTests(unittest.TestCase):
         message.from_user = Mock(id=1087968824, is_bot=True)
         sender = get_sender(message)
         self.assertEqual((sender.kind, sender.id), ("sender_chat", -1009))
+
+
+class ClassificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_spam_verdict_uses_non_thinking_mode(self):
+        client = Mock()
+        client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(choices=[
+            SimpleNamespace(message=SimpleNamespace(content="SPAM"), finish_reason="stop")
+        ]))
+        self.assertTrue(await is_ai_spam(client, "test", "example", "sender", Profile("test")))
+        request = client.chat.completions.create.call_args.kwargs
+        self.assertEqual(request["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertGreaterEqual(request["max_tokens"], 16)
+
+    async def test_empty_verdict_is_reported_as_failure(self):
+        client = Mock()
+        client.chat.completions.create = AsyncMock(return_value=SimpleNamespace(choices=[
+            SimpleNamespace(message=SimpleNamespace(content=None), finish_reason="length")
+        ]))
+        with self.assertLogs("bot", level="ERROR") as logs:
+            self.assertFalse(await is_ai_spam(client, "test", "example", "sender", Profile("test")))
+        self.assertIn("no valid verdict", logs.output[0])
 
 
 class CommandTests(unittest.IsolatedAsyncioTestCase):

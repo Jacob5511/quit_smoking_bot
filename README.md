@@ -52,6 +52,9 @@ Send `/start` or `/status` to either bot for a visible reply. In a group,
 `/status` also reports its delete/restrict permissions. Logs show the verified
 username at startup, a runtime summary every minute, received update metadata,
 and successful welcome/status replies, without logging tokens or message text.
+AI classification explicitly disables DeepSeek thinking mode so its short output
+budget is used for the `SPAM` or `LEGITIMATE` verdict. A missing verdict or API
+error is logged; the message is allowed when the AI check cannot complete.
 
 After the combined service is confirmed working, stop the two old services.
 Do not run an old service and this service with the same token at the same time.
